@@ -1,0 +1,40 @@
+{
+  "id": "strategy-cabinet",
+  "name": "跨领域战略内阁",
+  "protocol": "cabinet",
+  "version": "1.0.0",
+  "chair_id": "steve-jobs",
+  "judge_ids": [],
+  "min_quorum": 2,
+  "min_margin": 0.08,
+  "allow_chair_override": true,
+  "auto_selectable": true,
+  "members": [
+    {
+      "hsa_id": "steve-jobs",
+      "role": "product-and-mission-chair",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "charlie-munger",
+      "role": "capital-and-risk-minister",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "donella-meadows",
+      "role": "systems-and-externalities-minister",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    }
+  ],
+  "memory_policy": {
+    "private_enabled": true,
+    "shared_read": true,
+    "shared_write_mode": "staged"
+  },
+  "tool_policy_id": "standard-research",
+  "max_rounds": 3,
+  "max_invocations": 36
+}

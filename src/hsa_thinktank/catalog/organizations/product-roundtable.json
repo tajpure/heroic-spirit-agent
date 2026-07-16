@@ -1,0 +1,40 @@
+{
+  "id": "product-roundtable",
+  "name": "产品决策圆桌",
+  "protocol": "roundtable",
+  "version": "1.0.0",
+  "chair_id": "steve-jobs",
+  "judge_ids": [],
+  "min_quorum": 2,
+  "min_margin": 0.1,
+  "allow_chair_override": false,
+  "auto_selectable": true,
+  "members": [
+    {
+      "hsa_id": "steve-jobs",
+      "role": "product-chair",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "charlie-munger",
+      "role": "risk-member",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "donella-meadows",
+      "role": "systems-member",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    }
+  ],
+  "memory_policy": {
+    "private_enabled": true,
+    "shared_read": true,
+    "shared_write_mode": "final_decision_only"
+  },
+  "tool_policy_id": "standard-research",
+  "max_rounds": 2,
+  "max_invocations": 24
+}

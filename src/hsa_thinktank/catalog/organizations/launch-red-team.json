@@ -1,0 +1,42 @@
+{
+  "id": "launch-red-team",
+  "name": "发布红蓝对抗评审",
+  "protocol": "red_team",
+  "version": "1.0.0",
+  "chair_id": "steve-jobs",
+  "judge_ids": [
+    "donella-meadows"
+  ],
+  "min_quorum": 3,
+  "min_margin": 0.1,
+  "allow_chair_override": false,
+  "auto_selectable": true,
+  "members": [
+    {
+      "hsa_id": "steve-jobs",
+      "role": "blue-chair",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "charlie-munger",
+      "role": "red-critic",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "donella-meadows",
+      "role": "independent-judge",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    }
+  ],
+  "memory_policy": {
+    "private_enabled": true,
+    "shared_read": true,
+    "shared_write_mode": "final_decision_only"
+  },
+  "tool_policy_id": "standard-research",
+  "max_rounds": 2,
+  "max_invocations": 24
+}
