@@ -17,6 +17,7 @@ from hsa_thinktank.memory import (
     ApprovalStore,
 )
 from hsa_thinktank.models import DecisionOption, DecisionProblem
+from hsa_thinktank.errors import ProtocolError
 from hsa_thinktank.orchestrator import ThinkTank
 from hsa_thinktank.run_store import LocalRunStore
 from hsa_thinktank.runtime import DeterministicRuntime, RawAgentResponse
@@ -38,8 +39,12 @@ def _problem(*, risk_tier: str = "medium", grants: list[str] | None = None) -> D
 @pytest.mark.parametrize(
     ("organization_id", "expected_calls"),
     [
+        ("capital-roundtable", 8),
+        ("grand-strategy-cabinet", 13),
+        ("philosophy-roundtable", 6),
         ("product-roundtable", 6),
         ("launch-red-team", 4),
+        ("science-technology-roundtable", 14),
         ("strategy-cabinet", 3),
     ],
 )
@@ -162,14 +167,12 @@ def test_auto_routed_two_hsa_cabinet_runs_end_to_end() -> None:
 
     assert report.status == "decided"
     assert report.protocol_name == "cabinet"
-    assert report.meeting_selection.selected_hsa_ids == [
-        "charlie-munger",
-        "donella-meadows",
-    ]
+    assert report.meeting_selection.organization_id == "grand-strategy-cabinet"
+    assert report.meeting_selection.selected_hsa_ids == ["donella-meadows", "elon-musk"]
     assert report.meeting_selection.effective_organization.chair_id == "donella-meadows"
     assert {call.hsa_id for call in report.runtime_calls} == {
-        "charlie-munger",
         "donella-meadows",
+        "elon-musk",
     }
     assert len(report.runtime_calls) == 2
 
@@ -351,3 +354,242 @@ def test_tool_artifact_ids_require_runtime_provenance(tmp_path: Path) -> None:
         for event in accepted.audit_events
         if event.event_type == "runtime_completed"
     )
+
+
+def test_public_url_in_artifact_ids_is_normalized_without_fabricating_tool_evidence() -> None:
+    source_url = "https://example.com/public-filing"
+
+    def responder(invocation):
+        payload = demo_responder(invocation)
+        payload["claims"][0]["basis"] = "grounded"
+        payload["claims"][0]["tool_artifact_ids"] = [source_url]
+        return payload
+
+    report = asyncio.run(
+        ThinkTank(
+            catalog=Catalog.builtin(),
+            runtimes=DeterministicRuntime(responder),
+        ).decide(
+            _problem(),
+            organization_id="product-roundtable",
+            persist=False,
+        )
+    )
+
+    assert report.status == "decided"
+    assert all(call.success for call in report.runtime_calls)
+    assert report.tool_artifact_ids == []
+    assert all(
+        [str(url) for url in claim.source_urls] == [source_url] for claim in report.rationale_claims
+    )
+    runtime_events = [
+        event for event in report.audit_events if event.event_type == "runtime_completed"
+    ]
+    assert runtime_events
+    assert all(
+        event.payload["normalizations"][0]["code"] == "url_artifact_moved_to_source"
+        for event in runtime_events
+    )
+    assert all(source_url not in str(event.payload["normalizations"]) for event in runtime_events)
+
+
+def test_empty_grounded_claim_is_downgraded_and_counted_in_quorum() -> None:
+    def responder(invocation):
+        payload = demo_responder(invocation)
+        payload["claims"][0].update(
+            {
+                "basis": "grounded",
+                "principle_ids": [],
+                "evidence_ids": [],
+                "memory_ids": [],
+                "tool_artifact_ids": [],
+            }
+        )
+        return payload
+
+    report = asyncio.run(
+        ThinkTank(
+            catalog=Catalog.builtin(),
+            runtimes=DeterministicRuntime(responder),
+        ).decide(
+            _problem(),
+            organization_id="product-roundtable",
+            persist=False,
+        )
+    )
+
+    assert report.status == "decided"
+    assert set(report.successful_member_ids) == set(report.meeting_selection.selected_hsa_ids)
+    assert all(call.success for call in report.runtime_calls)
+    assert all(claim.basis == "inferred" for claim in report.rationale_claims)
+    assert all(
+        event.payload["normalizations"][0]["code"] == "grounded_without_provenance_downgraded"
+        for event in report.audit_events
+        if event.event_type == "runtime_completed"
+    )
+
+
+def test_generated_option_claims_share_provenance_normalization_and_prompt_rules() -> None:
+    source_url = "https://example.com/market-data"
+
+    def responder(invocation):
+        payload = demo_responder(invocation)
+        if invocation.metadata["response_type"] == "GeneratedOptions":
+            payload["claims"] = [
+                {
+                    "claim": "The public data motivates these candidate actions",
+                    "basis": "grounded",
+                    "tool_artifact_ids": [source_url],
+                }
+            ]
+        return payload
+
+    runtime = DeterministicRuntime(responder)
+    report = asyncio.run(
+        ThinkTank(catalog=Catalog.builtin(), runtimes=runtime).decide(
+            DecisionProblem(id="decision-option-claims", question="What should we do?"),
+            organization_id="product-roundtable",
+            persist=False,
+        )
+    )
+
+    generated_message = report.messages[0]
+    assert generated_message.phase == "option_generation"
+    assert generated_message.payload["claims"][0]["tool_artifact_ids"] == []
+    assert generated_message.payload["claims"][0]["source_urls"] == [source_url]
+    assert "source_urls" in runtime.invocations[0].user_prompt
+    assert "禁止把 URL 放入该字段" in runtime.invocations[0].user_prompt
+
+
+def test_generated_option_claim_with_unknown_opaque_artifact_fails_closed() -> None:
+    def responder(invocation):
+        payload = demo_responder(invocation)
+        if invocation.metadata["response_type"] == "GeneratedOptions":
+            payload["claims"] = [
+                {
+                    "claim": "Unsupported option-generation claim",
+                    "basis": "grounded",
+                    "tool_artifact_ids": ["made-up-artifact"],
+                }
+            ]
+        return payload
+
+    with pytest.raises(ProtocolError, match="failed to generate a valid frozen option set"):
+        asyncio.run(
+            ThinkTank(
+                catalog=Catalog.builtin(),
+                runtimes=DeterministicRuntime(responder),
+            ).decide(
+                DecisionProblem(id="decision-bad-option-claim", question="What should we do?"),
+                organization_id="product-roundtable",
+                persist=False,
+            )
+        )
+
+
+def test_red_team_attack_url_uses_public_source_without_a_grounded_downgrade() -> None:
+    source_with_secret_query = "https://example.com/risk?access_token=private#details"
+
+    def responder(invocation):
+        payload = demo_responder(invocation)
+        if invocation.metadata["response_type"] == "RedTeamCritique":
+            payload["attacks"][0]["tool_artifact_ids"] = [source_with_secret_query]
+        return payload
+
+    report = asyncio.run(
+        ThinkTank(
+            catalog=Catalog.builtin(),
+            runtimes=DeterministicRuntime(responder),
+        ).decide(
+            _problem(),
+            organization_id="launch-red-team",
+            persist=False,
+        )
+    )
+
+    critique = next(message for message in report.messages if message.phase == "red_critique")
+    attack = critique.payload["attacks"][0]
+    assert attack["tool_artifact_ids"] == []
+    assert attack["source_urls"] == ["https://example.com/risk"]
+    assert "basis" not in attack
+    critique_call = next(call for call in report.runtime_calls if call.phase == "red_critique")
+    assert critique_call.success is True
+
+
+def test_mixed_three_member_provenance_shapes_all_count_toward_quorum() -> None:
+    def responder(invocation):
+        payload = demo_responder(invocation)
+        if invocation.hsa_id == "charlie-munger":
+            payload["claims"][0]["basis"] = "grounded"
+            payload["claims"][0]["tool_artifact_ids"] = ["https://example.com/public-source"]
+        elif invocation.hsa_id == "donella-meadows":
+            payload["claims"][0].update(
+                {
+                    "basis": "grounded",
+                    "principle_ids": [],
+                    "evidence_ids": [],
+                    "memory_ids": [],
+                    "tool_artifact_ids": [],
+                }
+            )
+        return payload
+
+    report = asyncio.run(
+        ThinkTank(
+            catalog=Catalog.builtin(),
+            runtimes=DeterministicRuntime(responder),
+        ).decide(
+            _problem(),
+            organization_id="product-roundtable",
+            persist=False,
+        )
+    )
+
+    assert report.status == "decided"
+    assert set(report.successful_member_ids) == {
+        "steve-jobs",
+        "charlie-munger",
+        "donella-meadows",
+    }
+    assert len(report.runtime_calls) == 6
+    assert all(call.success for call in report.runtime_calls)
+
+
+def test_invalid_source_url_shape_cannot_leak_input_into_runtime_or_audit() -> None:
+    secret = "https://example.com/source?access_token=do-not-persist"
+
+    def responder(invocation):
+        payload = demo_responder(invocation)
+        payload["claims"][0].update(
+            {
+                "basis": "grounded",
+                "source_urls": secret,
+                "tool_artifact_ids": [],
+            }
+        )
+        return payload
+
+    report = asyncio.run(
+        ThinkTank(
+            catalog=Catalog.builtin(),
+            runtimes=DeterministicRuntime(responder),
+        ).decide(
+            _problem(),
+            organization_id="product-roundtable",
+            persist=False,
+        )
+    )
+
+    assert report.status == "inconclusive"
+    assert all(not call.success for call in report.runtime_calls)
+    private_record = json.dumps(
+        {
+            "runtime_calls": [call.model_dump(mode="json") for call in report.runtime_calls],
+            "audit_events": [event.model_dump(mode="json") for event in report.audit_events],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert "do-not-persist" not in private_record
+    assert "access_token" not in private_record
+    assert all("types=list_type" in (call.error or "") for call in report.runtime_calls)

@@ -1,0 +1,64 @@
+{
+  "id": "science-technology-roundtable",
+  "name": "科学与技术圆桌",
+  "protocol": "roundtable",
+  "version": "1.1.0",
+  "chair_id": "richard-feynman",
+  "judge_ids": [],
+  "min_quorum": 2,
+  "min_margin": 0.1,
+  "allow_chair_override": false,
+  "auto_selectable": true,
+  "members": [
+    {
+      "hsa_id": "richard-feynman",
+      "role": "experiment-and-explanation-chair",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "albert-einstein",
+      "role": "conceptual-modeling-member",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "charles-darwin",
+      "role": "comparative-evidence-member",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "elon-musk",
+      "role": "engineering-and-scale-member",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "andrej-karpathy",
+      "role": "ai-systems-and-evaluation-member",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "serenity-aleabitoreddit",
+      "role": "ai-infrastructure-supply-chain-member",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    },
+    {
+      "hsa_id": "steve-jobs",
+      "role": "technology-product-member",
+      "weight": 1.0,
+      "correlation_group": "hermes-default"
+    }
+  ],
+  "memory_policy": {
+    "private_enabled": true,
+    "shared_read": true,
+    "shared_write_mode": "final_decision_only"
+  },
+  "tool_policy_id": "standard-research",
+  "max_rounds": 2,
+  "max_invocations": 24
+}

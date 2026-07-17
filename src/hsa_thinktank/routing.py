@@ -16,7 +16,14 @@ from .models import (
 
 
 AUTO_ORGANIZATION_ID = "auto"
-ROUTER_VERSION = "domain-signal-v1"
+ROUTER_VERSION = "domain-signal-v2"
+
+
+_DEFAULT_HSA_IDS = (
+    "steve-jobs",
+    "charlie-munger",
+    "donella-meadows",
+)
 
 
 _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
@@ -37,7 +44,7 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "roadmap",
         ),
         "domains": (
-            "product",
+            "product_",
             "user_experience",
             "design_quality",
             "creative_work",
@@ -49,14 +56,30 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "创新",
             "创意",
             "愿景",
+            "发明",
+            "研发",
+            "深科技",
             "新业务",
             "创业",
             "innovation",
             "creative",
             "vision",
+            "invention",
+            "deep tech",
             "startup",
         ),
-        "domains": ("innovation", "creative", "leadership", "company_direction"),
+        "domains": (
+            "innovation",
+            "creative",
+            "leadership",
+            "company_direction",
+            "mission_driven",
+            "deep_tech",
+            "first_principles",
+            "reproducible_prototyping",
+            "engineering_strategy",
+            "cost_reduction",
+        ),
     },
     "capital": {
         "terms": (
@@ -69,6 +92,11 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "商业模式",
             "并购",
             "现金流",
+            "估值",
+            "股票",
+            "证券",
+            "股东",
+            "企业价值",
             "investment",
             "capital",
             "budget",
@@ -76,8 +104,20 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "revenue",
             "pricing",
             "cash flow",
+            "valuation",
+            "stock",
+            "equity",
+            "shareholder",
         ),
-        "domains": ("investment", "capital_allocation", "business_strategy"),
+        "domains": (
+            "investment",
+            "capital_allocation",
+            "business_strategy",
+            "business_analysis",
+            "valuation",
+            "long_term_investing",
+            "shareholder",
+        ),
     },
     "risk": {
         "terms": (
@@ -104,6 +144,9 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "expert_judgment",
             "governance",
             "negotiation",
+            "risk_management",
+            "reliability_review",
+            "resilience",
         ),
     },
     "systems": {
@@ -124,7 +167,13 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "externality",
             "complex",
         ),
-        "domains": ("systems", "system_", "complex_systems", "adaptive_management"),
+        "domains": (
+            "systems",
+            "system_",
+            "complex_systems",
+            "adaptive_management",
+            "ecological",
+        ),
     },
     "organization": {
         "terms": (
@@ -142,7 +191,14 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "hiring",
             "management",
         ),
-        "domains": ("organizational", "governance", "leadership", "negotiation"),
+        "domains": (
+            "organizational",
+            "governance",
+            "leadership",
+            "negotiation",
+            "accountability",
+            "team_collaboration",
+        ),
     },
     "operations": {
         "terms": (
@@ -151,14 +207,25 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "效率",
             "扩容",
             "供应链",
+            "工程交付",
             "可靠性",
             "operations",
             "delivery",
             "efficiency",
             "scale",
+            "supply chain",
             "reliability",
         ),
-        "domains": ("operations", "experimentation", "prioritization"),
+        "domains": (
+            "operations",
+            "experimentation",
+            "prioritization",
+            "manufacturing",
+            "supply_chain",
+            "technical_diagnosis",
+            "reliability",
+            "project_management",
+        ),
     },
     "policy": {
         "terms": (
@@ -191,7 +258,218 @@ _SIGNAL_RULES: dict[str, dict[str, tuple[str, ...]]] = {
             "portfolio",
             "long-term",
         ),
-        "domains": ("strategy", "prioritization", "portfolio", "organizational_focus"),
+        "domains": (
+            "strategy",
+            "prioritization",
+            "portfolio",
+            "organizational_focus",
+            "mission_driven",
+            "resource_allocation",
+        ),
+    },
+    "science": {
+        "terms": (
+            "科学",
+            "实验",
+            "假设",
+            "理论",
+            "物理",
+            "机制",
+            "测量",
+            "研究方法",
+            "science",
+            "experiment",
+            "hypothesis",
+            "theory",
+            "physics",
+            "mechanism",
+            "measurement",
+            "scientific method",
+        ),
+        "domains": (
+            "scientific_",
+            "physics",
+            "theoretical_",
+            "experimental_",
+            "hypothesis_",
+            "observational_",
+            "technical_diagnosis",
+            "conceptual_analysis",
+        ),
+    },
+    "physics": {
+        "terms": (
+            "物理",
+            "相对论",
+            "量子",
+            "时空",
+            "physics",
+            "relativity",
+            "quantum",
+            "spacetime",
+        ),
+        "domains": (
+            "physics_",
+            "theoretical_modeling",
+            "thought_experiments",
+            "scientific_explanation",
+            "technical_validation",
+            "scientific_reasoning",
+            "experimental_design",
+        ),
+    },
+    "engineering": {
+        "terms": (
+            "工程",
+            "制造",
+            "架构",
+            "技术方案",
+            "性能",
+            "成本曲线",
+            "规模化",
+            "瓶颈",
+            "engineering",
+            "manufacturing",
+            "architecture",
+            "technical design",
+            "performance",
+            "cost curve",
+            "scale-up",
+            "bottleneck",
+        ),
+        "domains": (
+            "engineering",
+            "manufacturing",
+            "deep_tech",
+            "systems_architecture",
+            "technical_",
+            "cost_reduction",
+            "reliability",
+            "ml_systems",
+            "reproducible_prototyping",
+        ),
+    },
+    "ai": {
+        "terms": (
+            "人工智能",
+            "大模型",
+            "模型训练",
+            "神经网络",
+            "机器学习",
+            "数据集",
+            "评测集",
+            "智能体",
+            "ai",
+            "llm",
+            "machine learning",
+            "neural network",
+            "model training",
+            "dataset",
+            "benchmark",
+            "agent",
+        ),
+        "domains": (
+            "ai_",
+            "neural_network",
+            "model_evaluation",
+            "ml_",
+            "llm_",
+            "data_curation",
+        ),
+    },
+    "learning": {
+        "terms": (
+            "学习",
+            "教育",
+            "教学",
+            "培养",
+            "learning",
+            "education",
+            "teaching",
+        ),
+        "domains": (
+            "learning",
+            "education",
+            "teaching",
+            "explanation",
+            "craft",
+            "self_cultivation",
+        ),
+    },
+    "philosophy": {
+        "terms": (
+            "哲学",
+            "伦理",
+            "道德",
+            "价值观",
+            "自我修养",
+            "仁",
+            "礼",
+            "无为",
+            "视角",
+            "智慧",
+            "philosophy",
+            "ethics",
+            "moral",
+            "virtue",
+            "values",
+            "wisdom",
+            "perspective",
+        ),
+        "domains": (
+            "confucian_ethics",
+            "humaneness",
+            "reciprocity",
+            "non_coercive",
+            "perspective",
+            "self_cultivation",
+            "philosophical",
+            "conflict_resolution",
+            "harmony",
+        ),
+    },
+    "evolution": {
+        "terms": (
+            "进化",
+            "演化",
+            "自然选择",
+            "生物",
+            "物种",
+            "evolution",
+            "natural selection",
+            "adaptation",
+            "biology",
+            "species",
+        ),
+        "domains": (
+            "evolution",
+            "ecological",
+            "comparative_analysis",
+            "longitudinal_change",
+            "observational_research",
+            "hypothesis_revision",
+        ),
+    },
+    "industry_research": {
+        "terms": (
+            "产业链",
+            "供应链研究",
+            "半导体供应链",
+            "上游供应商",
+            "产业瓶颈",
+            "industry research",
+            "supply chain research",
+            "semiconductor supply chain",
+            "upstream supplier",
+            "industry chokepoint",
+        ),
+        "domains": (
+            "industry_research",
+            "semiconductor_supply_chain",
+            "competitive_analysis",
+            "fundamental_analysis",
+            "ai_infrastructure",
+        ),
     },
 }
 
@@ -218,6 +496,9 @@ _ROUTER_POLICY_HASH = content_hash(
         "maximum_desired_hsas": 3,
         "minimum_meeting_hsas": 2,
         "high_risk_protocol": "red_team",
+        "default_hsa_ids": _DEFAULT_HSA_IDS,
+        "partial_roster_fill": "highest-score-with-chair-tiebreak",
+        "desired_roster_strategy": "signal-winners-then-aggregate-score",
     }
 )
 
@@ -242,6 +523,13 @@ class MeetingRouter:
             profile_id: _profile_score(profile, matched_signals)
             for profile_id, profile in self.catalog.profiles.items()
         }
+        signal_scores = {
+            signal: {
+                profile_id: _profile_score(profile, (signal,))
+                for profile_id, profile in self.catalog.profiles.items()
+            }
+            for signal in matched_signals
+        }
         rendered_scores = {key: round(value, 3) for key, value in sorted(scores.items())}
 
         if requested_organization_id not in {None, AUTO_ORGANIZATION_ID}:
@@ -260,6 +548,7 @@ class MeetingRouter:
 
         desired_hsa_ids = _desired_hsa_ids(
             scores,
+            signal_scores=signal_scores,
             matched_signals=matched_signals,
             risk_tier=problem.risk_tier,
         )
@@ -401,18 +690,33 @@ def _profile_score(profile: HSAProfile, matched_signals: Iterable[str]) -> float
 def _desired_hsa_ids(
     scores: dict[str, float],
     *,
+    signal_scores: dict[str, dict[str, float]],
     matched_signals: tuple[str, ...],
     risk_tier: str,
 ) -> set[str]:
     ranked = sorted(scores, key=lambda hsa_id: (-scores[hsa_id], hsa_id))
     maximum = min(3, len(ranked))
     if risk_tier == "high" or not matched_signals:
-        return set(ranked[:maximum])
+        fallback = [hsa_id for hsa_id in _DEFAULT_HSA_IDS if hsa_id in scores]
+        fallback.extend(hsa_id for hsa_id in ranked if hsa_id not in fallback)
+        return set(fallback[:maximum])
     count = 2
     ambiguous_top = maximum >= 3 and scores[ranked[0]] == scores[ranked[2]]
     if maximum >= 3 and scores[ranked[2]] > 0 and (len(matched_signals) >= 3 or ambiguous_top):
         count = 3
-    return set(ranked[: min(count, maximum)])
+    signal_winners: set[str] = set()
+    for signal in matched_signals:
+        per_signal = signal_scores[signal]
+        winner = min(per_signal, key=lambda hsa_id: (-per_signal[hsa_id], hsa_id))
+        if per_signal[winner] > 0:
+            signal_winners.add(winner)
+    prioritized = sorted(signal_winners, key=lambda hsa_id: (-scores[hsa_id], hsa_id))
+    prioritized.extend(
+        hsa_id
+        for hsa_id in ranked
+        if hsa_id not in signal_winners and scores[hsa_id] > 0
+    )
+    return set(prioritized[: min(count, maximum)])
 
 
 def _desired_protocol(
@@ -458,7 +762,10 @@ def _choose_base_organization(
         candidates,
         key=lambda organization: (
             -len(_member_ids(organization).intersection(desired_hsa_ids)),
-            -sum(scores.get(member.hsa_id, 0.0) for member in organization.members),
+            -sum(
+                scores.get(hsa_id, 0.0)
+                for hsa_id in _member_ids(organization).intersection(desired_hsa_ids)
+            ),
             len(organization.members),
             organization.id,
         ),
@@ -473,8 +780,18 @@ def _effective_organization(
 ) -> OrganizationSpec:
     base_member_ids = _member_ids(organization)
     selected = desired_hsa_ids.intersection(base_member_ids)
-    if organization.protocol == "red_team" or len(selected) < 2:
+    if organization.protocol == "red_team":
         selected = base_member_ids
+    elif len(selected) < 2:
+        ranked_fillers = sorted(
+            base_member_ids - selected,
+            key=lambda hsa_id: (
+                -scores.get(hsa_id, 0.0),
+                hsa_id != organization.chair_id,
+                hsa_id,
+            ),
+        )
+        selected.update(ranked_fillers[: 2 - len(selected)])
     members = [member for member in organization.members if member.hsa_id in selected]
     if len(members) < 2:
         raise ValueError("auto-routed meetings require at least two HSA members")

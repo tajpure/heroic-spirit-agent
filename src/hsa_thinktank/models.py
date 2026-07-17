@@ -9,7 +9,17 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
+
+from .provenance import normalize_public_source_url
 
 
 ID_PATTERN = r"^[a-z0-9][a-z0-9-]{1,63}$"
@@ -280,25 +290,54 @@ class MeetingSelection(StrictModel):
         return content_hash(self)
 
 
-class GeneratedOptions(StrictModel):
-    options: list[DecisionOption] = Field(min_length=2, max_length=6)
-    generation_note: str = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def validate_options(self) -> "GeneratedOptions":
-        ids = [option.id for option in self.options]
-        if len(ids) != len(set(ids)):
-            raise ValueError("generated option ids must be unique")
-        return self
-
-
 class RationaleClaim(StrictModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"basis": {"const": "grounded"}},
+                        "required": ["basis"],
+                    },
+                    "then": {
+                        "anyOf": [
+                            {
+                                "properties": {field: {"minItems": 1}},
+                                "required": [field],
+                            }
+                            for field in (
+                                "principle_ids",
+                                "evidence_ids",
+                                "memory_ids",
+                                "tool_artifact_ids",
+                                "source_urls",
+                            )
+                        ]
+                    },
+                }
+            ]
+        }
+    )
+
     claim: str = Field(min_length=1)
     basis: Basis
     principle_ids: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     memory_ids: list[str] = Field(default_factory=list)
     tool_artifact_ids: list[str] = Field(default_factory=list)
+    source_urls: list[HttpUrl] = Field(default_factory=list, max_length=8)
+
+    @field_validator("source_urls", mode="before")
+    @classmethod
+    def validate_public_source_urls(cls, values: Any) -> Any:
+        if not isinstance(values, (list, tuple)):
+            return values
+        normalized: list[str] = []
+        for value in values:
+            source_url = normalize_public_source_url(value)
+            if source_url not in normalized:
+                normalized.append(source_url)
+        return normalized
 
     @model_validator(mode="after")
     def grounded_claim_requires_provenance(self) -> "RationaleClaim":
@@ -308,9 +347,30 @@ class RationaleClaim(StrictModel):
                 self.evidence_ids,
                 self.memory_ids,
                 self.tool_artifact_ids,
+                self.source_urls,
             )
         ):
             raise ValueError("grounded claims require at least one provenance reference")
+        return self
+
+    @model_serializer(mode="wrap")
+    def omit_empty_source_urls(self, handler):
+        serialized = handler(self)
+        if not self.source_urls:
+            serialized.pop("source_urls", None)
+        return serialized
+
+
+class GeneratedOptions(StrictModel):
+    options: list[DecisionOption] = Field(min_length=2, max_length=6)
+    generation_note: str = Field(min_length=1)
+    claims: list[RationaleClaim] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> "GeneratedOptions":
+        ids = [option.id for option in self.options]
+        if len(ids) != len(set(ids)):
+            raise ValueError("generated option ids must be unique")
         return self
 
 
@@ -355,6 +415,26 @@ class Attack(StrictModel):
     suggested_mitigation: str = ""
     evidence_ids: list[str] = Field(default_factory=list)
     tool_artifact_ids: list[str] = Field(default_factory=list)
+    source_urls: list[HttpUrl] = Field(default_factory=list, max_length=8)
+
+    @field_validator("source_urls", mode="before")
+    @classmethod
+    def validate_public_source_urls(cls, values: Any) -> Any:
+        if not isinstance(values, (list, tuple)):
+            return values
+        normalized: list[str] = []
+        for value in values:
+            source_url = normalize_public_source_url(value)
+            if source_url not in normalized:
+                normalized.append(source_url)
+        return normalized
+
+    @model_serializer(mode="wrap")
+    def omit_empty_source_urls(self, handler):
+        serialized = handler(self)
+        if not self.source_urls:
+            serialized.pop("source_urls", None)
+        return serialized
 
 
 class RedTeamCritique(StrictModel):
@@ -556,29 +636,29 @@ def validate_option_references(
     if unknown or missing:
         raise ValueError(
             "option_scores must contain exactly frozen options; "
-            f"unknown={sorted(unknown)}, missing={sorted(missing)}"
+            f"unknown_count={len(unknown)}, missing_count={len(missing)}"
         )
     if contribution.preferred_option_id not in option_ids:
         raise ValueError("preferred_option_id is not frozen")
     for risk in contribution.risks:
         if risk.option_id not in option_ids:
-            raise ValueError(f"risk references unknown option: {risk.option_id}")
+            raise ValueError("risk references an unknown option")
     if contribution.criterion_scores:
         criterion_option_ids = set(contribution.criterion_scores)
         if criterion_option_ids != option_ids:
             raise ValueError(
                 "criterion_scores must contain exactly frozen options when provided; "
-                f"unknown={sorted(criterion_option_ids - option_ids)}, "
-                f"missing={sorted(option_ids - criterion_option_ids)}"
+                f"unknown_count={len(criterion_option_ids - option_ids)}, "
+                f"missing_count={len(option_ids - criterion_option_ids)}"
             )
         if criterion_ids is not None:
             for option_id, scores in contribution.criterion_scores.items():
                 supplied = set(scores)
                 if supplied != criterion_ids:
                     raise ValueError(
-                        f"criterion_scores[{option_id!r}] must contain exactly frozen "
-                        f"criteria; unknown={sorted(supplied - criterion_ids)}, "
-                        f"missing={sorted(criterion_ids - supplied)}"
+                        "criterion_scores entry must contain exactly frozen criteria; "
+                        f"unknown_count={len(supplied - criterion_ids)}, "
+                        f"missing_count={len(criterion_ids - supplied)}"
                     )
     expected_hard_constraints = hard_constraint_ids or set()
     if expected_hard_constraints:
@@ -586,16 +666,16 @@ def validate_option_references(
         if supplied_options != option_ids:
             raise ValueError(
                 "constraint_results must contain exactly frozen options; "
-                f"unknown={sorted(supplied_options - option_ids)}, "
-                f"missing={sorted(option_ids - supplied_options)}"
+                f"unknown_count={len(supplied_options - option_ids)}, "
+                f"missing_count={len(option_ids - supplied_options)}"
             )
         for option_id, results in contribution.constraint_results.items():
             supplied_constraints = set(results)
             if supplied_constraints != expected_hard_constraints:
                 raise ValueError(
-                    f"constraint_results[{option_id!r}] must contain exactly hard "
-                    f"constraints; unknown={sorted(supplied_constraints - expected_hard_constraints)}, "
-                    f"missing={sorted(expected_hard_constraints - supplied_constraints)}"
+                    "constraint_results entry must contain exactly hard constraints; "
+                    f"unknown_count={len(supplied_constraints - expected_hard_constraints)}, "
+                    f"missing_count={len(expected_hard_constraints - supplied_constraints)}"
                 )
     elif contribution.constraint_results:
         raise ValueError("constraint_results were supplied but no hard constraints are frozen")

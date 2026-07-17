@@ -80,8 +80,12 @@ _DISPOSITION_LABELS = {
 }
 
 _ORGANIZATION_LABELS = {
+    "capital-roundtable": "资本圆桌",
+    "grand-strategy-cabinet": "全域战略内阁",
     "product-roundtable": "产品圆桌",
     "launch-red-team": "发布红队",
+    "philosophy-roundtable": "哲学圆桌",
+    "science-technology-roundtable": "科学技术圆桌",
     "strategy-cabinet": "战略内阁",
 }
 
@@ -165,6 +169,22 @@ def _status_explanation(status: str, reason: str) -> str | None:
         "rejected": "关键风险尚未解决，当前不建议推进。",
         "budget_exhausted": "讨论尚未完成，暂不下结论。",
     }.get(status)
+
+
+def _completion_message(status: str) -> str:
+    """Describe how the meeting ended without exposing internal decision states."""
+
+    return {
+        "decided": "讨论结束，已形成建议",
+        "needs_human": "讨论结束，建议等待你确认",
+        "inconclusive": "讨论结束，暂未形成一致结论",
+        "rejected": "讨论结束，当前不建议推进",
+        "budget_exhausted": "讨论尚未完成，暂不下结论",
+    }.get(status, "本轮讨论已结束")
+
+
+def _completion_style(status: str) -> str:
+    return "bold green" if status == "decided" else "bold yellow"
 
 
 def _claim_text(item: Any) -> str | None:
@@ -276,9 +296,7 @@ def _content_markdown(
             if not response:
                 continue
             attack = attack_labels.get(str(disposition.get("attack_id") or ""))
-            status = _DISPOSITION_LABELS.get(
-                str(disposition.get("status") or ""), "回应"
-            )
+            status = _DISPOSITION_LABELS.get(str(disposition.get("status") or ""), "回应")
             if attack:
                 lines.append(f"- 关于“{attack}”：{status}——{response}")
             else:
@@ -287,9 +305,7 @@ def _content_markdown(
     contribution: dict[str, Any] = {}
     if phase_name == "executive_ballot" and isinstance(payload.get("ballot"), dict):
         contribution = payload["ballot"]
-    elif phase_name == "blue_rebuttal" and isinstance(
-        payload.get("revised_ballot"), dict
-    ):
+    elif phase_name == "blue_rebuttal" and isinstance(payload.get("revised_ballot"), dict):
         contribution = payload["revised_ballot"]
     elif phase_name in {
         "independent_ballot",
@@ -633,9 +649,7 @@ class HSAChatApp(App[None]):
             self.query_one("#meeting-title", Static).update(
                 f"{organization} · 参会：{'、'.join(participant_names)}"
             )
-            self._timeline(
-                f"[green]{escape('、'.join(participant_names))} 开始讨论[/]"
-            )
+            self._timeline(f"[green]{escape('、'.join(participant_names))} 开始讨论[/]")
             return
 
         if kind == "options_frozen":
@@ -652,15 +666,9 @@ class HSAChatApp(App[None]):
             if panel:
                 panel.begin_invocation()
                 panel.set_status(f"正在{human_phase}")
-            self._timeline(
-                f"[cyan]{escape(display_name)}[/]：{escape(human_phase)}"
-            )
+            self._timeline(f"[cyan]{escape(display_name)}[/]：{escape(human_phase)}")
         elif kind in {"agent_output_accepted", "output_accepted"}:
-            value = (
-                payload.get("value")
-                or payload.get("output")
-                or payload
-            )
+            value = payload.get("value") or payload.get("output") or payload
             if isinstance(value, dict):
                 self._remember_options(value)
                 self._remember_attacks(value)
@@ -673,16 +681,14 @@ class HSAChatApp(App[None]):
                             phase=phase,
                             option_labels=self._option_labels,
                             attack_labels=self._attack_labels,
-                        )
+                        ),
                     )
                 summary = _statement_summary(
                     value,
                     phase=phase,
                     option_labels=self._option_labels,
                 )
-                self._timeline(
-                    f"[green]{escape(display_name)}：[/] {escape(summary)}"
-                )
+                self._timeline(f"[green]{escape(display_name)}：[/] {escape(summary)}")
         elif kind in {
             "agent_output_rejected",
             "invocation_failed",
@@ -746,7 +752,8 @@ class HSAChatApp(App[None]):
         self._busy = False
         self._cancel_failure = None
         self.query_one("#decision", Markdown).update(self._report_markdown(message.report))
-        self._timeline("[bold green]最终结论已形成[/]")
+        status = str(getattr(message.report, "status", "unknown"))
+        self._timeline(f"[{_completion_style(status)}]{escape(_completion_message(status))}[/]")
         self._dequeue_next_turn()
 
     async def on_turn_failed(self, message: TurnFailed) -> None:
@@ -896,9 +903,7 @@ class HSAChatApp(App[None]):
             pass
         except Exception:
             self._cancel_failure = "取消未能立即完成，请稍后重试。"
-            self.query_one("#decision", Markdown).update(
-                f"### 最终结论\n\n{self._cancel_failure}"
-            )
+            self.query_one("#decision", Markdown).update(f"### 最终结论\n\n{self._cancel_failure}")
             self._timeline(f"[bold red]{escape(self._cancel_failure)}[/]")
         finally:
             self.workers.cancel_group(self, "meeting")

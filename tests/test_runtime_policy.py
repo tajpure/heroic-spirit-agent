@@ -358,11 +358,105 @@ def test_final_only_helper_filters_content_before_writing_stdout(
     assert "private chain" not in output
 
 
+def test_bridge_tool_completion_metadata_is_stable_and_excludes_raw_result() -> None:
+    result = {"answer": "private-result-value", "items": [1, 2, 3]}
+
+    first = hermes_event_bridge._tool_completion_data(
+        invocation_id="inv-1",
+        tool_call_id="tool-1",
+        name="web_search",
+        result=result,
+    )
+    repeated = hermes_event_bridge._tool_completion_data(
+        invocation_id="inv-1",
+        tool_call_id="tool-1",
+        name="web_search",
+        result=result,
+    )
+    another_invocation = hermes_event_bridge._tool_completion_data(
+        invocation_id="inv-2",
+        tool_call_id="tool-1",
+        name="web_search",
+        result=result,
+    )
+
+    assert first == repeated
+    assert first["artifact"] == {
+        "id": first["artifact"]["id"],
+        "kind": "hermes-tool-result",
+        "tool_name": "web_search",
+        "result_size": first["result_size"],
+        "result_sha256": first["result_sha256"],
+    }
+    assert first["artifact"]["id"].startswith("hta_")
+    assert first["artifact"]["id"] != another_invocation["artifact"]["id"]
+    assert "private-result-value" not in json.dumps(first, sort_keys=True)
+
+
 def make_executable(tmp_path: Path, body: str) -> Path:
     executable = tmp_path / "fake-profile"
     executable.write_text(f"#!{sys.executable}\n" + textwrap.dedent(body), encoding="utf-8")
     executable.chmod(0o700)
     return executable
+
+
+def make_single_completion_bridge(
+    tmp_path: Path,
+    completion: dict[str, object],
+) -> Path:
+    completion_json = json.dumps(completion, sort_keys=True)
+    return make_executable(
+        tmp_path,
+        f"""
+        import json
+        import sys
+
+        protocol = "hsa-hermes-ndjson"
+        capabilities = [
+            "response_delta",
+            "tool_events",
+            "session_resume",
+            "profile_context",
+            "ephemeral_system_prompt",
+            "scoped_toolsets",
+            "max_turns",
+            "graceful_interrupt",
+        ]
+        if "--check" in sys.argv:
+            print(json.dumps({{
+                "protocol": protocol,
+                "protocol_version": 1,
+                "bridge_version": "test",
+                "available": True,
+                "capabilities": capabilities,
+                "reason": "",
+            }}))
+            raise SystemExit(0)
+
+        print(json.dumps({{
+            "protocol": protocol,
+            "protocol_version": 1,
+            "sequence": 1,
+            "type": "bridge.ready",
+            "data": {{"capabilities": capabilities}},
+        }}), flush=True)
+        json.loads(sys.stdin.readline())
+        print(json.dumps({{
+            "protocol": protocol,
+            "protocol_version": 1,
+            "sequence": 2,
+            "type": "tool.completed",
+            "data": json.loads({completion_json!r}),
+        }}), flush=True)
+        print(json.dumps({{
+            "protocol": protocol,
+            "protocol_version": 1,
+            "sequence": 3,
+            "type": "response.completed",
+            "data": {{"content": "{{\\\"answer\\\":true}}", "session_id": "session-1"}},
+        }}), flush=True)
+        """,
+    )
 
 
 def test_hermes_runtime_returns_only_stdout_and_parses_stderr_session(
@@ -475,7 +569,15 @@ def test_hermes_bridge_streams_machine_readable_events_with_scoped_settings(
             emit(4, "tool.completed", {
                 "tool_call_id": "tool-1",
                 "name": "web_search",
+                "result_size": 42,
                 "result_sha256": "0" * 64,
+                "artifact": {
+                    "id": "hta_32b13a0547148cf12f6126619e7b8c9a",
+                    "kind": "hermes-tool-result",
+                    "tool_name": "web_search",
+                    "result_size": 42,
+                    "result_sha256": "0" * 64,
+                },
             })
             emit(5, "response.delta", {"text": "true}"})
             emit(6, "response.completed", {
@@ -525,6 +627,68 @@ def test_hermes_bridge_streams_machine_readable_events_with_scoped_settings(
         "tool.started",
         "tool.completed",
     ]
+    assert response.tool_artifacts == (
+        {
+            "id": "hta_32b13a0547148cf12f6126619e7b8c9a",
+            "kind": "hermes-tool-result",
+            "tool_name": "web_search",
+            "result_size": 42,
+            "result_sha256": "0" * 64,
+        },
+    )
+
+
+def test_streaming_runtime_accepts_legacy_tool_completion_without_artifact(
+    tmp_path: Path,
+) -> None:
+    bridge = make_single_completion_bridge(
+        tmp_path,
+        {
+            "tool_call_id": "legacy-tool-1",
+            "name": "web_search",
+            "result_size": 7,
+            "result_sha256": "1" * 64,
+        },
+    )
+    runtime = HermesProfileRuntime(
+        profile="jobs-profile",
+        executable="/bin/false",
+        profile_home=tmp_path,
+        bridge_command=bridge,
+    )
+
+    response = asyncio.run(runtime.invoke(invocation(), event_sink=lambda _event: None))
+
+    assert response.content == '{"answer":true}'
+    assert response.tool_artifacts == ()
+    assert response.tool_events[0]["event_type"] == "tool.completed"
+
+
+def test_streaming_runtime_rejects_malformed_explicit_tool_artifact(
+    tmp_path: Path,
+) -> None:
+    completion = hermes_event_bridge._tool_completion_data(
+        invocation_id="inv-1",
+        tool_call_id="tool-1",
+        name="web_search",
+        result={"secret": "must-not-leak"},
+    )
+    completion["artifact"] = {
+        **completion["artifact"],
+        "raw_result": "must-not-leak",
+    }
+    bridge = make_single_completion_bridge(tmp_path, completion)
+    runtime = HermesProfileRuntime(
+        profile="jobs-profile",
+        executable="/bin/false",
+        profile_home=tmp_path,
+        bridge_command=bridge,
+    )
+
+    with pytest.raises(AgentRuntimeError, match="protocol failed after dispatch") as error:
+        asyncio.run(runtime.invoke(invocation(), event_sink=lambda _event: None))
+
+    assert "must-not-leak" not in str(error.value)
 
 
 def test_unavailable_bridge_falls_back_before_dispatch(tmp_path: Path) -> None:

@@ -48,6 +48,9 @@ _BEARER_TOKEN = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]+")
 _URL_CREDENTIALS = re.compile(r"(https?://)([^/@\s:]+):([^/@\s]+)@")
 _PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _BRIDGE_ERROR_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+_TOOL_ARTIFACT_ID = re.compile(r"^hta_[0-9a-f]{32}$")
+_TOOL_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+_SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _BRIDGE_PROTOCOL = "hsa-hermes-ndjson"
 _BRIDGE_PROTOCOL_VERSION = 1
 _REQUIRED_BRIDGE_CAPABILITIES = frozenset(
@@ -194,6 +197,18 @@ class _BridgeFrame(BaseModel):
     data: dict[str, Any]
 
 
+class _BridgeToolArtifact(BaseModel):
+    """Sanitised evidence metadata accepted across the child boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: str = Field(pattern=_TOOL_ARTIFACT_ID.pattern)
+    kind: Literal["hermes-tool-result"]
+    tool_name: str = Field(pattern=_TOOL_NAME_PATTERN, max_length=128)
+    result_size: int = Field(ge=0)
+    result_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+
 @runtime_checkable
 class AgentRuntime(Protocol):
     """Asynchronous runtime contract used by the orchestrator."""
@@ -235,6 +250,7 @@ class _BridgeAccumulator:
     content: str | None = None
     session_id: str | None = None
     tool_events: list[dict[str, Any]] = field(default_factory=list)
+    tool_artifacts: list[dict[str, Any]] = field(default_factory=list)
     error_code: str | None = None
 
 
@@ -270,6 +286,49 @@ def _safe_bridge_error_code(value: object) -> str:
     if isinstance(value, str) and _BRIDGE_ERROR_CODE.fullmatch(value):
         return value
     return "bridge_error"
+
+
+def _validated_tool_artifact(
+    payload: object,
+    *,
+    frame_data: dict[str, Any],
+    invocation_id: str,
+) -> dict[str, Any]:
+    """Validate artifact shape and bind it to the surrounding completion."""
+
+    artifact = _BridgeToolArtifact.model_validate(payload)
+    tool_call_id = frame_data.get("tool_call_id")
+    tool_name = frame_data.get("name")
+    result_size = frame_data.get("result_size")
+    result_digest = frame_data.get("result_sha256")
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        raise ValueError("tool artifact requires a non-empty tool_call_id")
+    if not isinstance(tool_name, str) or not tool_name:
+        raise ValueError("tool artifact requires a non-empty tool name")
+    if not isinstance(result_size, int) or isinstance(result_size, bool) or result_size < 0:
+        raise ValueError("tool artifact requires a non-negative result_size")
+    if not isinstance(result_digest, str) or re.fullmatch(_SHA256_PATTERN, result_digest) is None:
+        raise ValueError("tool artifact requires a SHA-256 result digest")
+
+    safe_name = (
+        tool_name
+        if re.fullmatch(_TOOL_NAME_PATTERN, tool_name) is not None
+        else f"tool-{hashlib.sha256(tool_name.encode('utf-8', errors='replace')).hexdigest()[:16]}"
+    )
+    identity = json.dumps(
+        [invocation_id, tool_call_id, tool_name, result_digest],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8", errors="replace")
+    expected_id = f"hta_{hashlib.sha256(identity).hexdigest()[:32]}"
+    if (
+        artifact.id != expected_id
+        or artifact.tool_name != safe_name
+        or artifact.result_size != result_size
+        or artifact.result_sha256 != result_digest
+    ):
+        raise ValueError("tool artifact does not match its completion frame")
+    return artifact.model_dump(mode="json")
 
 
 def _subprocess_isolation() -> dict[str, Any]:
@@ -662,9 +721,7 @@ class HermesProfileRuntime:
                 raise ValueError("bridge.ready requires a string capability list")
             missing = sorted(_REQUIRED_BRIDGE_CAPABILITIES - set(ready_capabilities))
             if missing:
-                raise ValueError(
-                    f"bridge.ready is missing capabilities: {', '.join(missing)}"
-                )
+                raise ValueError(f"bridge.ready is missing capabilities: {', '.join(missing)}")
         except asyncio.CancelledError:
             await self._terminate_process(process, ready_task, stderr_task)
             raise
@@ -758,6 +815,7 @@ class HermesProfileRuntime:
             session_id=accumulator.session_id,
             runtime="hermes-profile",
             profile=self.profile,
+            tool_artifacts=tuple(accumulator.tool_artifacts),
             tool_events=tuple(accumulator.tool_events),
             metadata={
                 "phase": invocation.phase,
@@ -801,6 +859,26 @@ class HermesProfileRuntime:
             elif frame.type in {"tool.started", "tool.completed"}:
                 event_name = "tool_started" if frame.type == "tool.started" else "tool_completed"
                 accumulator.tool_events.append({"event_type": frame.type, **frame.data})
+                if frame.type == "tool.completed" and "artifact" in frame.data:
+                    artifact = _validated_tool_artifact(
+                        frame.data["artifact"],
+                        frame_data=frame.data,
+                        invocation_id=invocation.invocation_id,
+                    )
+                    previous = next(
+                        (
+                            item
+                            for item in accumulator.tool_artifacts
+                            if item["id"] == artifact["id"]
+                        ),
+                        None,
+                    )
+                    if previous is not None and previous != artifact:
+                        raise ValueError(
+                            "bridge emitted conflicting metadata for one tool artifact"
+                        )
+                    if previous is None:
+                        accumulator.tool_artifacts.append(artifact)
                 event = RuntimeStreamEvent(
                     event_type=event_name,
                     sequence=frame.sequence,

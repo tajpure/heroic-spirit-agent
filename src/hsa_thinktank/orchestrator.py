@@ -46,6 +46,7 @@ from .models import (
 )
 from .profile_manager import native_memory_fingerprint
 from .prompting import compile_soul_prompt, compile_task_prompt
+from .provenance import normalize_provenance_payload
 from .protocols import ProtocolTask, TaskResult, protocol_for
 from .run_store import (
     ApprovalOutboxOperation,
@@ -54,7 +55,7 @@ from .run_store import (
     RunOutbox,
 )
 from .routing import AUTO_ORGANIZATION_ID, MeetingRouter
-from .runtime import AgentInvocation, AgentRuntime, RuntimeStreamEvent
+from .runtime import AgentInvocation, AgentRuntime, RuntimeStreamEvent, redact_sensitive
 from .tool_policy import ToolPolicy, get_tool_policy
 
 
@@ -102,6 +103,7 @@ class _RawOutcome:
     enabled_toolsets: tuple[str, ...]
     tool_events: tuple[dict[str, Any], ...]
     tool_artifacts: tuple[dict[str, Any], ...]
+    normalizations: tuple[dict[str, str], ...]
     error: str | None
 
 
@@ -226,6 +228,7 @@ class _RunContext:
                         }
                         for item in raw.tool_artifacts
                     ],
+                    "normalizations": list(raw.normalizations),
                     "response_hash": content_hash(raw.response_text) if raw.response_text else None,
                     "error": raw.error,
                 },
@@ -346,15 +349,19 @@ class _RunContext:
                     enabled_toolsets=enabled_toolsets,
                     tool_events=(),
                     tool_artifacts=(),
+                    normalizations=(),
                     error=str(exc),
                 ),
                 wave_id=wave_id,
                 task_index=task_index,
             )
 
+        normalizations: tuple[dict[str, str], ...] = ()
         try:
             parsed = extract_json_object(response.content)
-            value = task.response_model.model_validate(parsed)
+            normalized = normalize_provenance_payload(parsed)
+            normalizations = normalized.normalizations
+            value = task.response_model.model_validate(normalized.payload)
             tool_artifact_ids = {
                 artifact_id
                 for item in response.tool_artifacts
@@ -382,6 +389,7 @@ class _RunContext:
                     enabled_toolsets=enabled_toolsets,
                     tool_events=tuple(getattr(response, "tool_events", ())),
                     tool_artifacts=tuple(getattr(response, "tool_artifacts", ())),
+                    normalizations=normalizations,
                     error=None,
                 ),
                 wave_id=wave_id,
@@ -398,7 +406,8 @@ class _RunContext:
                     enabled_toolsets=enabled_toolsets,
                     tool_events=tuple(response.tool_events),
                     tool_artifacts=tuple(response.tool_artifacts),
-                    error=f"structured output rejected: {exc}",
+                    normalizations=normalizations,
+                    error=_structured_output_error(exc),
                 ),
                 wave_id=wave_id,
                 task_index=task_index,
@@ -1145,6 +1154,29 @@ class ThinkTank:
         self.approval_store.pending(plan.request)
 
 
+def _structured_output_error(error: Exception) -> str:
+    if isinstance(error, ValidationError):
+        try:
+            errors = error.errors(include_input=False, include_url=False)
+        except TypeError:  # Pydantic 2.8 compatibility
+            errors = error.errors()
+        error_types = sorted(
+            {
+                value
+                for item in errors
+                if isinstance((value := item.get("type")), str)
+                and value.replace("_", "").replace(".", "").isalnum()
+            }
+        )
+        rendered_types = ",".join(error_types[:8]) or "validation_error"
+        return (
+            "structured output rejected: validation failed; "
+            f"error_count={len(errors)}; types={rendered_types}"
+        )
+    detail = redact_sensitive(str(error)).strip() or type(error).__name__
+    return f"structured output rejected: {detail}"
+
+
 def _validate_references(
     value: BaseModel,
     *,
@@ -1159,7 +1191,15 @@ def _validate_references(
     hard_constraint_ids = {
         criterion.id for criterion in problem.criteria if criterion.hard_constraint
     }
-    if isinstance(value, Contribution):
+    if isinstance(value, GeneratedOptions):
+        _validate_claim_references(
+            value.claims,
+            principle_ids=principle_ids,
+            evidence_ids={item.id for item in problem.evidence},
+            visible_memory_ids=visible_memory_ids,
+            tool_artifact_ids=tool_artifact_ids,
+        )
+    elif isinstance(value, Contribution):
         validate_option_references(
             value,
             option_ids,
@@ -1196,8 +1236,8 @@ def _validate_references(
         if supplied_attack_ids != expected_attack_ids:
             raise ValueError(
                 "rebuttal dispositions must contain exactly the received attacks; "
-                f"unknown={sorted(supplied_attack_ids - expected_attack_ids)}, "
-                f"missing={sorted(expected_attack_ids - supplied_attack_ids)}"
+                f"unknown_count={len(supplied_attack_ids - expected_attack_ids)}, "
+                f"missing_count={len(expected_attack_ids - supplied_attack_ids)}"
             )
     elif isinstance(value, ExecutiveDecision):
         validate_option_references(
@@ -1220,17 +1260,19 @@ def _validate_references(
             _validate_attack(attack, option_ids)
             unknown_evidence = set(attack.evidence_ids) - {item.id for item in problem.evidence}
             if unknown_evidence:
-                raise ValueError(f"attack references unknown evidence: {sorted(unknown_evidence)}")
+                raise ValueError(
+                    f"attack references unknown evidence: count={len(unknown_evidence)}"
+                )
             unknown_artifacts = set(attack.tool_artifact_ids) - tool_artifact_ids
             if unknown_artifacts:
                 raise ValueError(
-                    f"attack references unavailable tool artifacts: {sorted(unknown_artifacts)}"
+                    f"attack references unavailable tool artifacts: count={len(unknown_artifacts)}"
                 )
 
 
 def _validate_attack(attack: Attack, option_ids: set[str]) -> None:
     if attack.option_id not in option_ids:
-        raise ValueError(f"attack references unknown option: {attack.option_id}")
+        raise ValueError("attack references an unknown option")
 
 
 def _validate_claim_references(
@@ -1247,16 +1289,18 @@ def _validate_claim_references(
         unknown_memory = set(claim.memory_ids) - visible_memory_ids
         unknown_artifacts = set(claim.tool_artifact_ids) - tool_artifact_ids
         if unknown_principles:
-            raise ValueError(f"claim references unknown principles: {sorted(unknown_principles)}")
+            raise ValueError(
+                f"claim references unknown principles: count={len(unknown_principles)}"
+            )
         if unknown_evidence:
-            raise ValueError(f"claim references unknown evidence: {sorted(unknown_evidence)}")
+            raise ValueError(f"claim references unknown evidence: count={len(unknown_evidence)}")
         if unknown_memory:
             raise ValueError(
-                f"claim references memory outside the frozen snapshot: {sorted(unknown_memory)}"
+                f"claim references memory outside the frozen snapshot: count={len(unknown_memory)}"
             )
         if unknown_artifacts:
             raise ValueError(
-                f"claim references unavailable tool artifacts: {sorted(unknown_artifacts)}"
+                f"claim references unavailable tool artifacts: count={len(unknown_artifacts)}"
             )
 
 

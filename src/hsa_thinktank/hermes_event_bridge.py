@@ -19,6 +19,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -34,6 +35,7 @@ BRIDGE_PROTOCOL = "hsa-hermes-ndjson"
 BRIDGE_PROTOCOL_VERSION = 1
 BRIDGE_VERSION = "1.0"
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 CAPABILITIES = (
     "response_delta",
@@ -126,8 +128,7 @@ def _prepare_hermes_imports() -> tuple[bool, str]:
     except Exception as first_error:
         if os.environ.get("HSA_HERMES_BRIDGE_REEXEC") == "1":
             return False, (
-                "Hermes imports failed after bridge re-exec "
-                f"({_exception_code(first_error)})"
+                f"Hermes imports failed after bridge re-exec ({_exception_code(first_error)})"
             )
 
         # Do not resolve venv interpreter symlinks here.  Multiple virtual
@@ -345,11 +346,14 @@ def _read_request() -> dict[str, Any]:
     ):
         raise ValueError("bridge request protocol does not match")
     prompt = value.get("prompt")
+    invocation_id = value.get("invocation_id")
     toolsets = value.get("toolsets")
     max_turns = value.get("max_turns")
     load_profile_context = value.get("load_profile_context")
     if not isinstance(prompt, str) or not prompt:
         raise ValueError("bridge prompt must be a non-empty string")
+    if not isinstance(invocation_id, str) or not invocation_id.strip():
+        raise ValueError("bridge invocation_id must be a non-empty string")
     if (
         not isinstance(toolsets, list)
         or not toolsets
@@ -414,6 +418,49 @@ def _safe_size_and_hash(value: Any) -> tuple[int, str]:
     return len(encoded), hashlib.sha256(encoded).hexdigest()
 
 
+def _safe_tool_name(value: Any) -> str:
+    """Return a bounded tool label that cannot carry arbitrary child data."""
+
+    raw = str(value)
+    if _TOOL_NAME.fullmatch(raw):
+        return raw
+    return f"tool-{hashlib.sha256(raw.encode('utf-8', errors='replace')).hexdigest()[:16]}"
+
+
+def _tool_completion_data(
+    *,
+    invocation_id: str,
+    tool_call_id: Any,
+    name: Any,
+    result: Any,
+) -> dict[str, Any]:
+    """Build a progress frame with a result-free, stable artifact record."""
+
+    raw_call_id = str(tool_call_id)
+    raw_name = str(name)
+    safe_name = _safe_tool_name(raw_name)
+    result_size, result_digest = _safe_size_and_hash(result)
+    identity = json.dumps(
+        [invocation_id, raw_call_id, raw_name, result_digest],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8", errors="replace")
+    artifact_id = f"hta_{hashlib.sha256(identity).hexdigest()[:32]}"
+    return {
+        "tool_call_id": raw_call_id,
+        "name": raw_name,
+        "result_size": result_size,
+        "result_sha256": result_digest,
+        "artifact": {
+            "id": artifact_id,
+            "kind": "hermes-tool-result",
+            "tool_name": safe_name,
+            "result_size": result_size,
+            "result_sha256": result_digest,
+        },
+    }
+
+
 def _run_request(request: dict[str, Any], emitter: _Emitter) -> int:
     # Load profile credentials/config before importing modules that cache
     # provider environment at import time. ``run_agent`` performs this load as
@@ -471,15 +518,14 @@ def _run_request(request: dict[str, Any], emitter: _Emitter) -> int:
         )
 
     def tool_completed(tool_call_id: str, name: str, arguments: Any, result: Any) -> None:
-        result_size, result_digest = _safe_size_and_hash(result)
         emitter.emit(
             "tool.completed",
-            {
-                "tool_call_id": str(tool_call_id),
-                "name": str(name),
-                "result_size": result_size,
-                "result_sha256": result_digest,
-            },
+            _tool_completion_data(
+                invocation_id=request["invocation_id"],
+                tool_call_id=tool_call_id,
+                name=name,
+                result=result,
+            ),
         )
 
     agent = AIAgent(

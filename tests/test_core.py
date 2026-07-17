@@ -6,10 +6,12 @@ from hsa_thinktank.aggregation import aggregate
 from hsa_thinktank.audit import AuditTrail
 from hsa_thinktank.catalog import Catalog
 from hsa_thinktank.models import (
+    Attack,
     Contribution,
     Criterion,
     DecisionOption,
     DecisionProblem,
+    GeneratedOptions,
     Objection,
     RationaleClaim,
     validate_option_references,
@@ -102,12 +104,84 @@ def hard_constraint_problem() -> DecisionProblem:
 
 def test_builtin_catalog_is_referentially_valid() -> None:
     catalog = Catalog.builtin()
-    assert sorted(catalog.profiles) == ["charlie-munger", "donella-meadows", "steve-jobs"]
+    assert sorted(catalog.profiles) == [
+        "albert-einstein",
+        "andrej-karpathy",
+        "charles-darwin",
+        "charlie-munger",
+        "confucius",
+        "donella-meadows",
+        "elon-musk",
+        "laozi",
+        "richard-feynman",
+        "serenity-aleabitoreddit",
+        "steve-jobs",
+        "warren-buffett",
+        "zhuangzi",
+    ]
     assert sorted(catalog.organizations) == [
+        "capital-roundtable",
+        "grand-strategy-cabinet",
         "launch-red-team",
+        "philosophy-roundtable",
         "product-roundtable",
+        "science-technology-roundtable",
         "strategy-cabinet",
     ]
+
+
+def test_claim_schema_exposes_grounded_provenance_rule_and_optional_option_claims() -> None:
+    schema = GeneratedOptions.model_json_schema()
+    claim_schema = schema["$defs"]["RationaleClaim"]
+    source_fields = {branch["required"][0] for branch in claim_schema["allOf"][0]["then"]["anyOf"]}
+
+    assert source_fields == {
+        "principle_ids",
+        "evidence_ids",
+        "memory_ids",
+        "tool_artifact_ids",
+        "source_urls",
+    }
+    assert schema["properties"]["claims"]["maxItems"] == 6
+    assert "claims" not in schema["required"]
+
+
+def test_empty_public_sources_do_not_change_legacy_claim_serialization_shape() -> None:
+    claim = RationaleClaim(claim="an inference", basis="inferred")
+
+    assert claim.model_dump(mode="json") == {
+        "claim": "an inference",
+        "basis": "inferred",
+        "principle_ids": [],
+        "evidence_ids": [],
+        "memory_ids": [],
+        "tool_artifact_ids": [],
+    }
+
+
+def test_public_source_satisfies_grounded_claim_contract() -> None:
+    claim = RationaleClaim(
+        claim="the filing states the amount",
+        basis="grounded",
+        source_urls=["HTTPS://Example.COM:443/filing#amount"],
+    )
+
+    assert claim.model_dump(mode="json")["source_urls"] == ["https://example.com/filing"]
+
+
+def test_attack_public_sources_are_optional_and_use_the_same_safe_url_shape() -> None:
+    attack = Attack(
+        attack_id="risk-one",
+        option_id="launch",
+        severity="medium",
+        claim="Public evidence documents the failure mode",
+        source_urls=["https://example.com/risk?token=private#details"],
+    )
+
+    assert attack.model_dump(mode="json")["source_urls"] == ["https://example.com/risk"]
+    assert "source_urls" not in attack.model_copy(update={"source_urls": []}).model_dump(
+        mode="json"
+    )
 
 
 def test_aggregation_discounts_shared_runtime_correlation() -> None:

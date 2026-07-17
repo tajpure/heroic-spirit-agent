@@ -324,6 +324,92 @@ def test_content_projection_keeps_arguments_and_hides_internal_metrics() -> None
         assert internal not in rendered
 
 
+def test_tui_shows_normalized_accepted_content_without_normalization_details() -> None:
+    async def scenario() -> None:
+        app = HSAChatApp(driver=FakeChatDriver(), catalog=Catalog.builtin())
+        async with app.run_test(size=(120, 35)) as pilot:
+            await app._set_selected_hsas(["steve-jobs"])
+            app._emit_event(
+                {
+                    "kind": "options_frozen",
+                    "payload": {
+                        "options": [
+                            {"id": "pilot", "description": "先做小范围试点"},
+                            {"id": "wait", "description": "暂缓推进"},
+                        ]
+                    },
+                }
+            )
+            app._emit_event(
+                {
+                    "kind": "agent_output_accepted",
+                    "hsa_id": "steve-jobs",
+                    "phase": "independent_ballot",
+                    "payload": {
+                        "value": {
+                            "preferred_option_id": "pilot",
+                            "option_scores": {"pilot": 0.8, "wait": 0.4},
+                            "confidence": 0.72,
+                            "claims": [
+                                {
+                                    "claim": "先用可逆试点验证真实需求",
+                                    "basis": "speculative",
+                                }
+                            ],
+                            "assumptions": [],
+                            "risks": [],
+                            "next_actions": ["先确认试点的停止条件"],
+                        },
+                        "normalizations": [
+                            {
+                                "code": "grounded_without_provenance_downgraded",
+                                "path": "claims[0]",
+                            }
+                        ],
+                    },
+                }
+            )
+
+            await pilot.pause(0.1)
+            surface = app.export_screenshot()
+            assert "先用可逆试点验证真实需求" in surface
+            assert "先确认试点的停止条件" in surface
+            for hidden in (
+                "0.72",
+                "confidence",
+                "speculative",
+                "normalizations",
+                "grounded_without_provenance_downgraded",
+                "claims[0]",
+            ):
+                assert hidden not in surface
+
+    asyncio.run(scenario())
+
+
+def test_turn_finished_timeline_distinguishes_completion_from_decision() -> None:
+    async def scenario() -> None:
+        app = HSAChatApp(driver=FakeChatDriver(), catalog=Catalog.builtin())
+        expected = {
+            "decided": "讨论结束，已形成建议",
+            "needs_human": "讨论结束，建议等待你确认",
+            "inconclusive": "讨论结束，暂未形成一致结论",
+            "rejected": "讨论结束，当前不建议推进",
+            "budget_exhausted": "讨论尚未完成，暂不下结论",
+        }
+        async with app.run_test(size=(120, 35)) as pilot:
+            for status, message in expected.items():
+                await app.on_turn_finished(
+                    SimpleNamespace(report=SimpleNamespace(status=status, status_reason=""))
+                )
+                await pilot.pause()
+                latest = app.query_one("#timeline").lines[-1].text
+                assert message in latest
+                assert "最终结论已形成" not in latest
+
+    asyncio.run(scenario())
+
+
 def test_content_projection_makes_red_team_dispute_readable() -> None:
     options = {"pilot": "做八周付费试点", "wait": "暂缓企业版"}
     critique = _content_markdown(
@@ -529,9 +615,7 @@ def test_tui_keeps_the_dispute_and_ignores_duplicate_audit_events() -> None:
     async def scenario() -> None:
         app = HSAChatApp(driver=FakeChatDriver(), catalog=Catalog.builtin())
         async with app.run_test(size=(150, 45)) as pilot:
-            await app._set_selected_hsas(
-                ["steve-jobs", "charlie-munger", "donella-meadows"]
-            )
+            await app._set_selected_hsas(["steve-jobs", "charlie-munger", "donella-meadows"])
             app._emit_event(
                 {
                     "kind": "options_frozen",
